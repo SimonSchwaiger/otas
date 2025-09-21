@@ -1,0 +1,3 @@
+[submodule "src/foundation_models/vggt"]
+    path = src/foundation_models/vggt
+    url = https://github.com/facebookresearch/vggt.git
