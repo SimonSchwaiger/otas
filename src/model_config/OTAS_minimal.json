@@ -1,0 +1,7 @@
+{
+    "dino_scale_factor": 2,
+    "shared_feat_resolution": 32,
+    "n_clusters": 12,
+    "n_components": 24,
+    "enable_mask_refinement": false
+}

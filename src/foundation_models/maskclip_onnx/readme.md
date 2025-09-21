@@ -1,0 +1,1 @@
+This directory's files are directly taken from the RogerQi's maskclip_onnx repository for CLIP model loading and dense patch-level feature extraction from MaskCLIP: https://github.com/RogerQi/maskclip_onnx

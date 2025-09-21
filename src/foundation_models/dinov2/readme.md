@@ -1,0 +1,1 @@
+This directory's files are directly taken from the DINOv2 GitHub repository for off-line vision transformer loading: https://github.com/facebookresearch/dinov2

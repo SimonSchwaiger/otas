@@ -1,0 +1,17 @@
+transformers # VGGT & zoedepth
+huggingface_hub 
+einops
+safetensors
+tdqm # OTAS inference
+scipy
+scikit-learn==1.5.2 # OTAS core
+opencv-python-headless==4.11.0.86
+pypose==0.7.3
+ftfy==6.3.1 # maskclip
+regex==2024.11.6 # maskclip
+matplotlib==3.10.1
+git+https://github.com/facebookresearch/sam2.git@2b90b9f5ceec907a1c18123530e92e794ad901a4#egg=sam-2
+open3d==0.19.0
+--extra-index-url https://download.pytorch.org/whl/cpu # change to cuda for gpu
+torch==2.6.0
+torchvision==0.21.0
