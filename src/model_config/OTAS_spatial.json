@@ -1,14 +1,8 @@
 {
-    "cam0_params": {
-        "fu_fv_cu_cv": [320.0, 320.0, 320.0, 240.0],
-        "width": 640,
-        "height": 480,
-        "fov": 90
-    },
     "enable_mask_refinement": false,
     "voxel_size": 0.5,
     "dino_scale_factor": 4,
     "shared_feat_resolution": 64,
-    "n_clusters": 12,
-    "n_components": 24
+    "n_clusters": 24,
+    "n_components": 12
 }
