@@ -27,7 +27,7 @@ config = {
 
     ## SAM2
     "sam2_model_config": "configs/sam2.1/sam2.1_hiera_t.yaml",
-    "sam2_model_path": f"{current_dir}foundation_models/sam2_checkpoints/sam2.1_hiera_tiny.pt",
+    "sam2_model_path": f"{current_dir}/foundation_models/sam2_checkpoints/sam2.1_hiera_tiny.pt",
     "sam2_device": target_device,
 
     ## SPATIAL
