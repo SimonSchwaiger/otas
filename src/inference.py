@@ -116,7 +116,7 @@ def vggt_inference(img_paths: List[str]):
 
     try:
         with torch.no_grad():
-            with torch.cuda.amp.autocast(dtype=dtype):
+            with torch.amp.autocast(device_type=device, dtype=dtype):
                 predictions = vggt_model(images)
 
             extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:]) # see https://github.com/facebookresearch/vggt/issues/18
@@ -231,21 +231,33 @@ class spatial_inference:
         assert ns_data_path.exists(), f"Nerfstudio data path does not exist: {ns_data_path}"
         assert ns_data_path.name == "transforms.json", f"Expected 'transforms.json', got '{ns_data_path.name}'"
         with open(ns_data_path, 'r') as f: ns_data = json.load(f)
-        ## Extract intrinsics
-        fl_x = ns_data['fl_x']; fl_y = ns_data['fl_y']
-        cx = ns_data['cx']; cy = ns_data['cy']
-        width = ns_data['w']; height = ns_data['h']
-
-        fov = ns_data.get('camera_angle_x', None)
-        cam0_params = {
-            "fu_fv_cu_cv": [fl_x, fl_y, cx, cy],
-            "width": width,
-            "height": height, }
-        if fov is not None:
-            import math
-            cam0_params["fov"] = round(fov * 180 / math.pi, 2)  # rad2deg
-        self.config["cam0_params"] = cam0_params
+        ## Extract intrinsics -> They may be defined globally or per frame we distinguish on the keys being present globally
+        try:
+            # Global intrinsics
+            fl_x = ns_data['fl_x']; fl_y = ns_data['fl_y']
+            cx = ns_data['cx']; cy = ns_data['cy']
+            width = ns_data['w']; height = ns_data['h']
+            per_frame_fu_fv_cu_cv = None
+        except KeyError:
+            ## Per frame intrinsics
+            per_frame_fu_fv_cu_cv = []
+            for entry in ns_data['frames']:
+                fl_x = entry['fl_x']; fl_y = entry['fl_y']
+                cx = entry['cx']; cy = entry['cy']
+                width = entry['w']; height = entry['h']
+                per_frame_fu_fv_cu_cv.append([fl_x, fl_y, cx, cy])
             
+        if per_frame_fu_fv_cu_cv == None: # Only for global intrinsics
+            fov = ns_data.get('camera_angle_x', None)
+            cam0_params = {
+                "fu_fv_cu_cv": [fl_x, fl_y, cx, cy],
+                "width": width,
+                "height": height, }
+            if fov is not None:
+                import math
+                cam0_params["fov"] = round(fov * 180 / math.pi, 2)  # rad2deg
+            self.config["cam0_params"] = cam0_params
+
         img_paths = []; depth_paths = []; cam_poses = []
         for entry in ns_data['frames']:
             ns_data_dir = str(Path(ns_data_path).parent)
@@ -255,7 +267,6 @@ class spatial_inference:
             tf = flip_y @ tf @ flip_y
             cam_poses.append(tf_mat2pose(tf))
 
-            cam_poses.append(tf_mat2pose(entry['transform_matrix']))
             if 'depth_path' in entry:
                 depth_paths.append(str(Path(ns_data_dir) / entry['depth_path']))
 
@@ -276,7 +287,7 @@ class spatial_inference:
             try:
                 depths = []
                 for img in imgs:
-                    with torch.cuda.amp.autocast(dtype=dtype):
+                    with torch.amp.autocast(device_type=device, dtype=dtype):
                         depth = depth_estimator(img)["predicted_depth"]
                         depths.append(depth)
             finally:
@@ -287,7 +298,7 @@ class spatial_inference:
             depths = [np.array(Image.open(depth_path)) / 1000.0 for depth_path in depth_paths] # mm to meters
 
         self.spatial_instance = self._model_factory(config=self.base_config)
-        self.reconstruct(imgs, depths, cam_poses)
+        self.reconstruct(imgs, depths, cam_poses, per_frame_fu_fv_cu_cv)
 
     def export_to_ns_data(self, ns_data_out_path: str) -> None:
         """Exports the reconstructed point cloud to a nerfstudio dataset"""
@@ -419,8 +430,8 @@ class spatial_inference:
         pcd = self.pcd.select_by_index(indices)
         return pcd
     
-    def query_relevance_pcd(self, pos_prompts: List[str], neg_prompts: List[str], cmap: str = 'Reds', threshold: float = -1000.) -> o3d.geometry.PointCloud:
-        """Returns pcd with coloured points based on semantic similarity"""
+    def query_similarity_pcd(self, pos_prompts: List[str], neg_prompts: List[str], cmap: str = 'Reds', threshold: float = -1000.) -> o3d.geometry.PointCloud:
+        """Returns pcd with coloured points based on semantic similarity. Removes points with similarity less than threshold."""
         assert hasattr(self, 'pcd') and hasattr(self, 'pooled_embeddings_geo'), "Must call reconstruct() before querying the point cloud"
         similarity = self.spatial_instance.similarity(self.pooled_embeddings_geo, pos_prompts, neg_prompts)
         from matplotlib import colormaps as cm
@@ -446,7 +457,7 @@ class spatial_inference:
         return pcd_rad.select_by_index(ind)
 
     @staticmethod
-    def cleanup_semantic_pcd(semantic_pcd: o3d.geometry.PointCloud, geometric_pcd: o3d.geometry.PointCloud,distance_threshold: float = 0.5) -> o3d.geometry.PointCloud:
+    def cleanup_semantic_pcd(semantic_pcd: o3d.geometry.PointCloud, geometric_pcd: o3d.geometry.PointCloud, distance_threshold: float = 0.5) -> o3d.geometry.PointCloud:
         """Returns semantic pcd with points only within distance_threshold [m] of the geometric pcd"""
         filtered_combined_pcd = o3d.geometry.PointCloud()
         pcd_tree = o3d.geometry.KDTreeFlann(geometric_pcd)
@@ -464,8 +475,9 @@ class spatial_inference:
                 # Only keep points within 0.5m of rgb surface
                 if dist < distance_threshold:
                     filtered_points.append(point)
-                    filtered_colors.append(np.asarray(semantic_pcd.colors)[i])
+                    if semantic_pcd.has_colors(): filtered_colors.append(np.asarray(semantic_pcd.colors)[i])
 
         filtered_combined_pcd.points = o3d.utility.Vector3dVector(np.array(filtered_points))
-        filtered_combined_pcd.colors = o3d.utility.Vector3dVector(np.array(filtered_colors))
+        if semantic_pcd.has_colors(): 
+            filtered_combined_pcd.colors = o3d.utility.Vector3dVector(np.array(filtered_colors))
         return filtered_combined_pcd
