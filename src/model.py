@@ -1,3 +1,4 @@
+#from vision_utils_radio_unified import * # For the future
 from vision_utils import *
 
 ## For eval against gpu versions
@@ -173,7 +174,7 @@ class language_map(nn.Module):
     @torch.no_grad()
     def dino_upscaled_feat(self, img: Image.Image) -> torch.Tensor:
         dino_scale_factor = self.config["dino_scale_factor"]
-        patch_tokens = dinov2_pipe(img)["x_norm_patchtokens"]
+        patch_tokens = featurizer.dinov2_pipe(img)["x_norm_patchtokens"]
         patch_tokens = F.normalize(patch_tokens.squeeze(0), dim=-1)
         num_patches = patch_tokens.shape[0]
         grid_size = int(math.sqrt(num_patches)) # assumes square grid
@@ -189,7 +190,7 @@ class language_map(nn.Module):
     @torch.no_grad()
     def clip_shared_feat_map(self, img: Image.Image) -> torch.Tensor:
         shared_feat_resolution = self.config["shared_feat_resolution"]
-        clip_feature_map = clip_pipe(img)["features"] # [1, 512, 14, 24]
+        clip_feature_map = featurizer.clip_pipe(img)["features"] # [1, 512, 14, 24]
         # Scale to squared grid and shared_feat_resolution
         source = clip_feature_map.squeeze(0)  # shape: [512, H_src, W_src]
         H_src, W_src = source.shape[1], source.shape[2]
@@ -256,6 +257,8 @@ class language_map(nn.Module):
     
     @torch.no_grad()
     def embed_image(self, img: Image.Image, ret_dict: bool = False) -> Union[torch.Tensor, dict]:
+        featurizer.encode_image(img)
+
         dino_upscaled_flat = self.dino_upscaled_feat(img)
         dino_reduced = self._dim_reduction(dino_upscaled_flat)
         cluster_labels = self._cluster_model(dino_reduced)
@@ -285,11 +288,11 @@ class semantic_mask(nn.Module):
     def similarity(self, shared_feature_map: torch.Tensor, pos_prompts: List[str], neg_prompts: List[str] = [""]) -> torch.Tensor:
         img_feats = shared_feature_map.permute(2, 0, 1).unsqueeze(0)
     
-        positive_feats = [ clip_encode_text(prompt)["features"] for prompt in pos_prompts ]
+        positive_feats = [ featurizer.clip_encode_text(prompt)["features"] for prompt in pos_prompts ]
         pos_sims = [ clip_similarity(img_feats, text_feats) for text_feats in positive_feats ]
     
         if neg_prompts != [""]:
-            negative_feats = [ clip_encode_text(prompt)["features"] for prompt in neg_prompts ]
+            negative_feats = [ featurizer.clip_encode_text(prompt)["features"] for prompt in neg_prompts ]
             neg_sims = [ clip_similarity(img_feats, text_feats) for text_feats in negative_feats ]
         else: neg_sims = torch.zeros_like(pos_sims[0]) # This uses the same device as pos_sims
     
@@ -442,7 +445,14 @@ class otas_spatial(nn.Module):
             else: fu, fv, cu, cv = fu_fv_cu_cv
             
             ## Embed DINO (context managed by lang map)
+            featurizer.encode_image(img)
+            # dino_embedding is not in the shared_feat map if dino_scale_factor*patch_size != shared_feat_dim. Therefore, interpolate here to be safe
             dino_embedding = self.language_map_instance.dino_upscaled_feat(img)
+            dino_embedding = dino_embedding.reshape((self.language_map_instance.scaled_dino_dim, self.language_map_instance.scaled_dino_dim, -1)).permute(2, 0, 1) # (feat_dim, grid_size, grid_size)
+            dino_embedding = F.interpolate(dino_embedding.unsqueeze(0), size=(self.config["shared_feat_resolution"], self.config["shared_feat_resolution"]), 
+                                           mode="bilinear", align_corners=False).squeeze(0) # (feat_dim, shared_feat_resolution, shared_feat_resolution)
+            dino_embedding = dino_embedding.permute(1, 2, 0).reshape(-1, dino_embedding.shape[0]) # (HWC, then (2*grid_size)^2, feat_dim )
+            self.language_map_instance.scaled_dino_dim = self.config["shared_feat_resolution"] # Set internally for later segmentation reshape
             dino_embeddings.append(dino_embedding.cpu())
         
             ## Embed CLIP (context managed by lang map)
@@ -568,14 +578,17 @@ class otas_spatial(nn.Module):
     @torch.no_grad()
     def similarity(self, pooled_embeddings: torch.Tensor, pos_prompts: List[str], neg_prompts: List[str] = [""]) -> torch.Tensor:
         pooled_embeddings = self._ensure_tensor(pooled_embeddings)
-        positive_feats = [ clip_encode_text(prompt)["features"] for prompt in pos_prompts ]
+        positive_feats = [ featurizer.clip_encode_text(prompt)["features"] for prompt in pos_prompts ]
         pos_sims = [ clip_similarity_flat(pooled_embeddings, text_feats) for text_feats in positive_feats ]
         
         if neg_prompts != [""]:
-            negative_feats = [ clip_encode_text(prompt)["features"] for prompt in neg_prompts ]
+            negative_feats = [ featurizer.clip_encode_text(prompt)["features"] for prompt in neg_prompts ]
             neg_sims = [ clip_similarity_flat(pooled_embeddings, text_feats) for text_feats in negative_feats ]
         else: neg_sims = torch.zeros_like(pos_sims[0]) # This uses the same device as pos_sims
         
         lr_sims = sum(pos_sims)/len(pos_sims) - sum(neg_sims)/len(neg_sims)
-        lr_sims_norm = (lr_sims - lr_sims.min()) / (lr_sims.max() - lr_sims.min() + 1e-8)
+        sim_min, sim_max = lr_sims.min(), lr_sims.max()
+        sim_range = torch.clamp(sim_max - sim_min, min=0.05) # Prevent normalisation from blowing up noise due to low similarity
+        lr_sims_norm = (lr_sims - sim_min) / (sim_range + 1e-8)
+        #lr_sims_norm = (lr_sims - lr_sims.min()) / (lr_sims.max() - lr_sims.min() + 1e-8) # Non-clamped version
         return lr_sims_norm.cpu()

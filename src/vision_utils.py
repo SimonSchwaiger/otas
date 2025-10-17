@@ -40,7 +40,7 @@ def dino_maybe_autocast(enabled: bool = config["enable_amp_autocast"], device: s
     return torch.amp.autocast(device) if enabled else contextlib.nullcontext()
 
 ## DinoV2 Preprocessing and basic inference
-t_dino = transforms.Compose([transforms.Resize((224, 224)),
+t_dino = transforms.Compose([transforms.Resize((518, 518)),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
 
@@ -110,6 +110,20 @@ def clip_encode_text(text_query: str) -> Dict[str, Any]:
         return {
             "features": text_feats,
         }
+
+class OTASFeaturizer:
+    def encode_image(self, img: Image) -> None: pass
+
+    def dinov2_pipe(self, img: Image) -> Dict[str, Any]:
+        return dinov2_pipe(img)
+    
+    def clip_pipe(self, img: Image) -> Dict[str, Any]:
+        return clip_pipe(img)
+    
+    def clip_encode_text(self, text_query: str) -> Dict[str, Any]:
+        return clip_encode_text(text_query)
+
+featurizer = OTASFeaturizer()
 
 # See: https://github.com/RogerQi/maskclip_onnx/blob/main/clip_playground.ipynb
 @torch.no_grad()
