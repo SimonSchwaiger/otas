@@ -52,7 +52,6 @@ class single_inference:
     def segmentation_single(self, img: Image.Image, pos_prompts: List[str], neg_prompts: List[str] = [""], threshold_value: float = 0.5):    
         vlm_embedding = self.language_map_instance.embed_image(img)
         if self.config["enable_mask_refinement"]:
-            if threshold_value != 0.5: print(f"[OTAS]: Threshold value is set but will not be used with mask refinement.")
             mask = self.mask_instance.binary_mask_refined(vlm_embedding, pos_prompts, neg_prompts=neg_prompts,
                                                     original_img=img, ret_dict=False, threshold_value=threshold_value)
         else: 

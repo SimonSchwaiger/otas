@@ -163,10 +163,10 @@ class language_map(nn.Module):
 
         return cluster_labels
 
-    def _segmentation_map(self, cluster_labels: torch.Tensor) -> torch.Tensor:
+    def _segmentation_map(self, cluster_labels: torch.Tensor, dtype: torch.dtype = torch.float32) -> torch.Tensor:
         shared_feat_resolution = self.config["shared_feat_resolution"]
         segmentation_map_tensor = cluster_labels.reshape(
-            self.scaled_dino_dim, self.scaled_dino_dim).unsqueeze(0).unsqueeze(0).float() # Shape: (1, 1, H_p, W_p)
+            self.scaled_dino_dim, self.scaled_dino_dim).unsqueeze(0).unsqueeze(0).to(dtype) # Shape: (1, 1, H_p, W_p)
         segmentation_map_upsampled = F.interpolate(segmentation_map_tensor, size=(shared_feat_resolution, shared_feat_resolution), 
                                                    mode="nearest").squeeze(0).squeeze(0) # Upsample to target resolution
         return segmentation_map_upsampled
@@ -191,6 +191,7 @@ class language_map(nn.Module):
     def clip_shared_feat_map(self, img: Image.Image) -> torch.Tensor:
         shared_feat_resolution = self.config["shared_feat_resolution"]
         clip_feature_map = featurizer.clip_pipe(img)["features"] # [1, 512, 14, 24]
+        dtype = clip_feature_map.dtype
         # Scale to squared grid and shared_feat_resolution
         source = clip_feature_map.squeeze(0)  # shape: [512, H_src, W_src]
         H_src, W_src = source.shape[1], source.shape[2]
@@ -200,8 +201,8 @@ class language_map(nn.Module):
         scale_h = H_src / target_H
         scale_w = W_src / target_W
         # Nearest neighbour map target pixel to source indices
-        source_y = (grid_y.float() * scale_h).floor().clamp(max=H_src - 1).long()  # shape: [shared_feat_resolution, shared_feat_resolution]
-        source_x = (grid_x.float() * scale_w).floor().clamp(max=W_src - 1).long()
+        source_y = (grid_y.to(dtype) * scale_h).floor().clamp(max=H_src - 1).long()  # shape: [shared_feat_resolution, shared_feat_resolution]
+        source_x = (grid_x.to(dtype) * scale_w).floor().clamp(max=W_src - 1).long()
         # Use advanced indexing to lookup the corresponding features
         clip_lookup_feature_map = source[:, source_y, source_x].permute(1, 2, 0) # Result is [512, shared_feat_resolution, shared_feat_resolution]; then permute to [shared, shared, 512]
         return clip_lookup_feature_map
@@ -210,7 +211,7 @@ class language_map(nn.Module):
         dino_upscaled_flat = self.dino_upscaled_feat(img)
         dino_reduced = self._dim_reduction(dino_upscaled_flat)
         cluster_labels = self._cluster_model(dino_reduced)
-        return self._segmentation_map(cluster_labels)
+        return self._segmentation_map(cluster_labels, dtype=dino_reduced.dtype)
 
     def masked_average_pooling_cpu(self, segmentation_map_upsampled: torch.Tensor, clip_lookup_feature_map: torch.Tensor) -> torch.Tensor:
         ## Rquires calls to cpu due to the loop. But more reliable with datatype casting
@@ -221,7 +222,7 @@ class language_map(nn.Module):
         
         for label in unique_labels:
             # Creates a mask for the current region; shape: [shared_feat_resolution, shared_feat_resolution, 1]
-            mask = (segmentation_map_upsampled == label).unsqueeze(-1).float()
+            mask = (segmentation_map_upsampled == label).unsqueeze(-1).to(segmentation_map_upsampled.dtype)
             masked_sum = (clip_lookup_feature_map * mask).sum(dim=(0, 1))
             count = mask.sum() # Number of pixels in the region
             if count > 0:
@@ -262,7 +263,7 @@ class language_map(nn.Module):
         dino_upscaled_flat = self.dino_upscaled_feat(img)
         dino_reduced = self._dim_reduction(dino_upscaled_flat)
         cluster_labels = self._cluster_model(dino_reduced)
-        dino_shared_feat = self._segmentation_map(cluster_labels)
+        dino_shared_feat = self._segmentation_map(cluster_labels, dtype=dino_reduced.dtype)
 
         clip_shared_feat = self.clip_shared_feat_map(img)
         pooled_embeddings = self.masked_average_pooling(dino_shared_feat, clip_shared_feat)
@@ -275,8 +276,7 @@ class language_map(nn.Module):
                 "dino_feat_map": dino_feat_map,
                 "dino_clusters": dino_shared_feat, 
                 "clip_shared_feat": clip_shared_feat,
-                "pooled_embeddings": pooled_embeddings 
-            }
+                "pooled_embeddings": pooled_embeddings }
         else: return pooled_embeddings
 
 class semantic_mask(nn.Module):
@@ -301,7 +301,6 @@ class semantic_mask(nn.Module):
         sim_min, sim_max = lr_sims.min(), lr_sims.max()
         sim_range = torch.clamp(sim_max - sim_min, min=0.05) # Prevent normalisation from blowing up noise due to low similarity
         lr_sims_norm = (lr_sims - sim_min) / (sim_range + 1e-8)
-        #lr_sims_norm = (lr_sims - lr_sims.min()) / (lr_sims.max() - lr_sims.min() + 1e-8) # Non-clamped version
         
         return lr_sims_norm
     
@@ -315,7 +314,7 @@ class semantic_mask(nn.Module):
         assert orig_h != 0 and orig_w != 0, "Input resolution not set. Please either provide original_img or orig_w and orig_h."
         
         lr_sims_norm = self.similarity(shared_feature_map, pos_prompts, neg_prompts)
-        binary_mask = (lr_sims_norm > threshold_value).float()
+        binary_mask = (lr_sims_norm > threshold_value).to(shared_feature_map.dtype)
 
         binary_mask_tensor = binary_mask.unsqueeze(0).unsqueeze(0)
         binary_mask_up = F.interpolate(binary_mask_tensor, size=(orig_h, orig_w), mode='nearest')
@@ -332,7 +331,7 @@ class semantic_mask(nn.Module):
         assert original_img != None, "No original_img provided. Mask refinement requires rgb input image."
         lr_sims_norm = self.similarity(shared_feature_map, pos_prompts, neg_prompts)
 
-        input_mask = lr_sims_norm.unsqueeze(0).unsqueeze(0)
+        input_mask = (lr_sims_norm > threshold_value).to(shared_feature_map.dtype).unsqueeze(0).unsqueeze(0) # input_mask = lr_sims_norm.unsqueeze(0).unsqueeze(0)
         input_mask = F.interpolate(input_mask, size=(256, 256), mode='bilinear', align_corners=False)
         input_mask = input_mask.squeeze()  # shape: [orig_h, orig_w]
         input_mask = (input_mask*20. - 10.).cpu().numpy() # to logits
@@ -518,7 +517,6 @@ class otas_spatial(nn.Module):
         ## CLUSTER
         norm_keypoints = self._ensure_tensor(norm_keypoints)
         valid_entries = self._ensure_tensor(valid_entries)
-        combined_reduced_feats = torch.cat([reduced_point_feats, norm_keypoints], dim=1)
         cluster_labels = self.language_map_instance._cluster_model(reduced_point_feats)
 
         ## BACKPROJECT AND MASKED POOLING
@@ -536,7 +534,7 @@ class otas_spatial(nn.Module):
             end = (frame_id + 1)*self.config["shared_feat_resolution"]**2
             
             labels = global_labels[start:end]
-            shared_dino_feat = self.language_map_instance._segmentation_map(labels)
+            shared_dino_feat = self.language_map_instance._segmentation_map(labels, dtype=dino_embeddings.dtype) 
             shared_clip_feat = clip_maps[frame_id]
             pooled_embedding = self.language_map_instance.masked_average_pooling_cpu(shared_dino_feat, shared_clip_feat)
             pooled_embedding_flat = torch.reshape(pooled_embedding, (self.config["shared_feat_resolution"]**2, -1))
@@ -590,5 +588,4 @@ class otas_spatial(nn.Module):
         sim_min, sim_max = lr_sims.min(), lr_sims.max()
         sim_range = torch.clamp(sim_max - sim_min, min=0.05) # Prevent normalisation from blowing up noise due to low similarity
         lr_sims_norm = (lr_sims - sim_min) / (sim_range + 1e-8)
-        #lr_sims_norm = (lr_sims - lr_sims.min()) / (lr_sims.max() - lr_sims.min() + 1e-8) # Non-clamped version
         return lr_sims_norm.cpu()
