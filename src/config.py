@@ -43,6 +43,7 @@ config = {
     "dim_reduction_type": "pca_gpu",
     "cluster_model_type": "kmeans",
     "enable_mask_refinement": True,
+    "enable_model_compilation": True, # Increases startup time and mem consumption but may speedup when using heavier backbones (e.g., RADIO)
     
     ## CAMERA CALIBRATION (Only for 3D)
     "cam0_params": {
