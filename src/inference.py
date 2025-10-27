@@ -96,7 +96,7 @@ def tf_mat2pose(tf_mat: ArrayLike) -> ArrayLike:
     qx, qy, qz, qw = R.from_matrix(tf_mat[:3, :3]).as_quat()
     return np.array([x, y, z, qx, qy, qz, qw])
 
-def vggt_inference(img_paths: List[str]):
+def vggt_inference(img_paths: List[str], remove_sky: bool = True):
     """Helper to estimate extrinsics and depth if not known"""
     import sys; sys.path.append(f"{current_dir}/foundation_models/vggt")
     from vggt.models.vggt import VGGT
@@ -142,13 +142,14 @@ def vggt_inference(img_paths: List[str]):
         clear_cuda_cache()
 
     ## Segment sky to remove depth outliers. see https://github.com/facebookresearch/vggt/blob/main/vggt_to_colmap.py
-    print(f"[OTAS]: Masking sky for depth estimation")
-    enable_autocast = False if device == "cpu" else True
-    otas_instance = single_inference(enable_amp_autocast=enable_autocast)
-    sky_masks = otas_instance.segmentation_batch(ret_images, ["sky", "clouds"], neg_prompts=["ground", "object"], threshold_value=0.24)
+    if remove_sky:
+        print(f"[OTAS]: Masking sky for depth estimation")
+        enable_autocast = False if device == "cpu" else True
+        otas_instance = single_inference(enable_amp_autocast=enable_autocast)
+        sky_masks = otas_instance.segmentation_batch(ret_images, ["sky", "clouds"], neg_prompts=["ground", "object"], threshold_value=0.24)
 
-    for depth, sky_mask in zip(depths, sky_masks): # mask sky as invalid #TODO: Maybe inflate mask just to be safe
-        depth[sky_mask >= 0.5] = np.inf
+        for depth, sky_mask in zip(depths, sky_masks): # mask sky as invalid #TODO: Maybe inflate mask just to be safe
+            depth[sky_mask >= 0.5] = np.inf
 
     ## Scale depths to metric depth
     print(f"[OTAS]: Scaling depths to metric depth")
@@ -219,7 +220,7 @@ class spatial_inference:
     def initialise_from_vggt_data(self, vggt_image_paths: List[str]) -> None:    
         img_paths = equally_space(vggt_image_paths, self.config.get("spatial_batch_size", len(vggt_image_paths)))
         
-        imgs, depths, cam_poses, fu_fv_cu_cvs = vggt_inference(img_paths)
+        imgs, depths, cam_poses, fu_fv_cu_cvs = vggt_inference(img_paths, remove_sky=self.config.get("vggt_remove_sky", True))
         self.imgs = imgs; self.depths = depths; self.cam_poses = cam_poses; self.fu_fv_cu_cvs = fu_fv_cu_cvs
 
         self.spatial_instance = self._model_factory(config=self.config)
