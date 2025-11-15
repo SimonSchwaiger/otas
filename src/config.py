@@ -19,6 +19,7 @@ config = {
     },
     "dinov2_model_path": f"{current_dir}/foundation_models/dinov2_checkpoints/dinov2_vits14_reg4_pretrain.pth",
     "dinov2_device": target_device, # can be individually overwritten
+    "dinov2_input_size": 518, # 224 for 16x16 feat map
        
     ## MASK CLIP
     "clip_device": target_device,
@@ -34,6 +35,7 @@ config = {
     "enable_spatial": True, # Disable this to skip slow Open3D import
     "spatial_device": target_device, # Disable if you have little GPU memory. Embedding will still be done on GPU
     "spatial_max_depth": 100,
+    "spatial_use_positional_prior": True,
 
     ## MODEL CONFIG
     "n_clusters": 24, # Sensible defaults for complex scenes -> If the number of semantic classes is known, set n_clusters and n_components to that number
@@ -44,13 +46,28 @@ config = {
     "cluster_model_type": "kmeans",
     "enable_mask_refinement": True,
     "enable_model_compilation": True, # Increases startup time and mem consumption but may speedup when using heavier backbones (e.g., RADIO)
+
+    ## ROS 2 MAPPING SERVER
+    "map_server_threshold": 0.7,
+    "map_server_neg_prompts": ["object"],
+    "map_server_publish_rate": 5, # Hz
+    "map_server_pub_geometry": True,
+    "map_server_pub_pca": True,
+    "map_server_pub_cluster": True,
+    "map_server_pub_mask": True,
+    "map_server_pub_similarity": True,
+    "map_server_do_cleanup": True, # Whether or not to cleanup mapped pointclouds (takes CPU time)
     
-    ## CAMERA CALIBRATION (Only for 3D)
-    "cam0_params": {
-        "fu_fv_cu_cv": [457.587, 456.134, 379.999, 255.238], # default from euroc cam1 (used for debugging). Set according to your camera for spatial to work properly
-        "dist_coeffs": [-0.28368365,  0.07451284, -0.00010473, -3.55590700e-05],
-        "distortion_model": "radial-tangential"
-    }
+    "ros_world_frame": "camera_init",
+    "ros_camera_optical_frame": "oak_rgb_camera_optical_frame",
+    "ros_rgb_topic": "/oak/rgb/image_raw",
+    "ros_depth_topic": "/oak/stereo/image_raw",
+    "ros_camera_info_topic": "/oak/stereo/camera_info",
+
+    "ros_keyframe_distance_threshold": 1.0, # m
+    "ros_keyframe_rotation_threshold": 0.6, # rad
+    "ros_keyframe_trans_velocity_threshold": 0.4, # m/s
+    "ros_keyframe_rotation_velocity_threshold": 0.3 # rad/s
 }
 
 if "OTAS_CONFIG_PATH" in os.environ: # allows parts of the global config to be overridden

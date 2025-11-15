@@ -1,0 +1,14 @@
+{
+    "enable_mask_refinement": false,
+    "voxel_size": 0.3,
+    "dino_scale_factor": 2,
+    "shared_feat_resolution": 74,
+    "dinov2_input_size": 518,
+    "n_clusters": 48,
+    "n_components": 48,
+    "cluster_model_type": "kmeans_gpu",
+    "spatial_max_depth": 7,
+    "spatial_batch_size": 200,
+    "spatial_trunc_strategy": "drop_oldest",
+    "spatial_use_positional_prior": false
+}

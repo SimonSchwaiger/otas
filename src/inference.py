@@ -12,7 +12,7 @@ import torch.nn.functional as F
 import open3d as o3d
 from PIL import Image
 
-from typing import List, Union, Tuple
+from typing import Any, List, Union, Tuple
 from numpy.typing import ArrayLike
 
 #if os.isatty(sys.stdout.fileno()): current_dir = os.getcwd() # Paths will be relative to PWD if running in a terminal
@@ -84,7 +84,7 @@ def all_imgs_in_dir(directory: str, extensions: Tuple[str, ...] = ('.png', '.jpg
         str(p) for p in directory_path.iterdir()
         if p.is_file() and p.suffix.lower() in extensions ])
 
-def equally_space(paths: List[str], n_images: int) -> List[str]:
+def equally_space(paths: List[Any], n_images: int) -> List[Any]:
     if len(paths) <= n_images: return paths
     indices = np.linspace(0, len(paths)-1, n_images, dtype=int)
     return [paths[i] for i in indices]
@@ -396,15 +396,17 @@ class spatial_inference:
         colour_rgb = self.batch_RGBs.cpu().numpy()[self.valid_entries.cpu().numpy()]
         self.pcd_colour.colors =  o3d.utility.Vector3dVector(colour_rgb.astype(float)/255)
 
-    def visualise_pca_pcd(self) -> o3d.geometry.PointCloud:
-        """Returns pcd with PCA-reduced pooled embeddings for visualisation"""
+    def visualise_pca_pcd(self, vis_pooled_feat: bool = True) -> o3d.geometry.PointCloud:
+        """Returns pcd with PCA-reduced pooled embeddings for visualisation. Returns PCA over the pooled embeddings by default. vis_pooled_feat==False, for the non-voxelised features."""
         assert hasattr(self, 'pcd') and hasattr(self, 'pooled_embeddings_geo'), "Must call reconstruct() before querying the point cloud"
         from sklearn.decomposition import PCA
         pca = PCA(n_components=3) # For rgb
-        valid_embeds = self.pooled_embeddings.cpu().numpy()[self.valid_entries.cpu().numpy()]
+        if vis_pooled_feat: valid_embeds = self.pooled_embeddings_geo.numpy()
+        else: valid_embeds = self.pooled_embeddings.cpu().numpy()[self.valid_entries.cpu().numpy()]
         reduced_rgb = pca.fit_transform(valid_embeds)
         colour_pca = F.normalize(torch.tensor(reduced_rgb).unsqueeze(0).unsqueeze(0), dim=-1).squeeze().squeeze().cpu().numpy()
-        pcd = o3d.geometry.PointCloud(self.pcd_colour)
+        if vis_pooled_feat: pcd = o3d.geometry.PointCloud(self.pcd)
+        else: pcd = o3d.geometry.PointCloud(self.pcd_colour)
         pcd.colors = o3d.utility.Vector3dVector(colour_pca)
         return pcd
     
