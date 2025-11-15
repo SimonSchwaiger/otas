@@ -285,10 +285,9 @@ class semantic_mask(nn.Module):
         self.config = config
     
     @torch.no_grad()
-    def similarity(self, shared_feature_map: torch.Tensor, pos_prompts: List[str], neg_prompts: List[str] = [""]) -> torch.Tensor:
+    def similarity(self, shared_feature_map: torch.Tensor, pos_prompts: List[Union[str, Image.Image]], neg_prompts: List[str] = [""]) -> torch.Tensor:
         img_feats = shared_feature_map.permute(2, 0, 1).unsqueeze(0)
-    
-        positive_feats = [ featurizer.clip_encode_text(prompt)["features"] for prompt in pos_prompts ]
+        positive_feats = [ featurizer.clip_global_feat_switch(prompt)["features"] for prompt in pos_prompts ]
         pos_sims = [ clip_similarity(img_feats, text_feats) for text_feats in positive_feats ]
     
         if neg_prompts != [""]:
@@ -331,6 +330,9 @@ class semantic_mask(nn.Module):
         assert original_img != None, "No original_img provided. Mask refinement requires rgb input image."
         lr_sims_norm = self.similarity(shared_feature_map, pos_prompts, neg_prompts)
 
+        #TODO: Improve with box or point prompts
+        # https://github.com/facebookresearch/sam2/issues/147
+        # https://github.com/facebookresearch/sam2/issues/435
         input_mask = (lr_sims_norm > threshold_value).to(shared_feature_map.dtype).unsqueeze(0).unsqueeze(0) # input_mask = lr_sims_norm.unsqueeze(0).unsqueeze(0)
         input_mask = F.interpolate(input_mask, size=(256, 256), mode='bilinear', align_corners=False)
         input_mask = input_mask.squeeze()  # shape: [orig_h, orig_w]
@@ -510,9 +512,12 @@ class otas_spatial(nn.Module):
         norm_keypoints = F.normalize(valid_keypoints, dim=-1)
 
         ## REDUCE
-        combined_point_feats = torch.cat([valid_dino_embeddings, norm_keypoints], dim=1)
-        combined_point_feats = F.normalize(combined_point_feats, dim=-1)
-        reduced_point_feats = self.language_map_instance._dim_reduction(combined_point_feats)
+        if self.config["spatial_use_positional_prior"]:
+            combined_point_feats = torch.cat([valid_dino_embeddings, norm_keypoints], dim=1)
+            combined_point_feats = F.normalize(combined_point_feats, dim=-1)
+            reduced_point_feats = self.language_map_instance._dim_reduction(combined_point_feats)
+        else:
+            reduced_point_feats = self.language_map_instance._dim_reduction(valid_dino_embeddings)
         
         ## CLUSTER
         norm_keypoints = self._ensure_tensor(norm_keypoints)
@@ -574,9 +579,9 @@ class otas_spatial(nn.Module):
         return pcd_downsampled, pooled_embeddings_geo, trace_arr
 
     @torch.no_grad()
-    def similarity(self, pooled_embeddings: torch.Tensor, pos_prompts: List[str], neg_prompts: List[str] = [""]) -> torch.Tensor:
+    def similarity(self, pooled_embeddings: torch.Tensor, pos_prompts: List[Union[str, Image.Image]], neg_prompts: List[str] = [""]) -> torch.Tensor:
         pooled_embeddings = self._ensure_tensor(pooled_embeddings)
-        positive_feats = [ featurizer.clip_encode_text(prompt)["features"] for prompt in pos_prompts ]
+        positive_feats = [ featurizer.clip_global_feat_switch(prompt)["features"] for prompt in pos_prompts ]
         pos_sims = [ clip_similarity_flat(pooled_embeddings, text_feats) for text_feats in positive_feats ]
         
         if neg_prompts != [""]:

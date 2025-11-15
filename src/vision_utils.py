@@ -52,9 +52,11 @@ class OTASFeaturizer(nn.Module):
         assert Path(config["dinov2_model_path"]).suffix == ".pth", f"Dino model is not of type '.pth'."
         checkpoint = torch.load(config["dinov2_model_path"], map_location=config["dinov2_device"], weights_only=True)
         dinov2_model.load_state_dict(checkpoint, strict=False)
-        self.dinov2_model = dinov2_model.eval().to(config["dinov2_device"])  # Set the model to evaluation mode if not training #TODO: add optional compilation
+        self.dinov2_model = dinov2_model.eval().to(config["dinov2_device"])
+        dinov2_input_size = int(config["dinov2_input_size"])
+        assert dinov2_input_size % config["dinov2_params"]["patch_size"] == 0, f"Dinov2 input size must be divisible by patch size"
 
-        self.t_dino = transforms.Compose([transforms.Resize((518, 518)),
+        self.t_dino = transforms.Compose([transforms.Resize((dinov2_input_size, dinov2_input_size)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
 
@@ -86,17 +88,17 @@ class OTASFeaturizer(nn.Module):
             self.dinov2_model = torch.compile(self.dinov2_model)
             self.clip_model = torch.compile(self.clip_model)
 
-    def encode_image(self, img: Image) -> None: pass # Placeholder for unified encoder with the ability to prevent redundant work
+    def encode_image(self, img: Image.Image) -> None: pass # Placeholder for unified encoder with the ability to prevent redundant work
 
     @torch.no_grad()
-    def dinov2_pipe(self, img: Image) -> Dict[str, Any]:
+    def dinov2_pipe(self, img: Image.Image) -> Dict[str, Any]:
         with self._dino_maybe_autocast():
             img_tensor = self.t_dino(img).unsqueeze(0).to(config["dinov2_device"])
             with torch.no_grad(): x = self.dinov2_model.forward_features(img_tensor)
             return x
     
     @torch.no_grad()
-    def clip_pipe(self, img: Image) -> Dict[str, Any]:
+    def clip_pipe(self, img: Image.Image) -> Dict[str, Any]:
         with self._clip_maybe_autocast():
             img_tensor = self.t_clip(img).unsqueeze(0).to(config["clip_device"])
 
@@ -108,6 +110,15 @@ class OTASFeaturizer(nn.Module):
 
             return {
                 "features": img_features }
+
+    @torch.no_grad()
+    def clip_pipe_global_token(self, img: Image.Image) -> Dict[str, Any]:
+        with self._clip_maybe_autocast():
+            img_tensor = self.t_clip(img).unsqueeze(0).to(config["clip_device"])
+            global_feature = self.clip_model.encode_image(img_tensor).squeeze().to(torch.float32)
+            assert len(global_feature.shape) == 1
+            return {
+                "features": global_feature }
     
     @torch.no_grad()
     def clip_encode_text(self, text_query: str) -> Dict[str, Any]:
@@ -117,6 +128,14 @@ class OTASFeaturizer(nn.Module):
             assert len(text_feats.shape) == 1
             return {
                 "features": text_feats }
+
+    @torch.no_grad()
+    def clip_global_feat_switch(self, prompt: Union[str, Image.Image]) -> Dict[str, Any]:
+        """Automatically switches between text and global image features for CLIP queries."""
+        if isinstance(prompt, Image.Image):
+            #self.encode_image(img_prompt) # TODO (future): required here with unified encoder (a lot of computation)? 
+            return self.clip_pipe_global_token(prompt)
+        else: return self.clip_encode_text(prompt)
 
 featurizer = OTASFeaturizer()
 
