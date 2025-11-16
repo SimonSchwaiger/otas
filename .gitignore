@@ -191,3 +191,4 @@ cache/*
 
 # Example photos (they are big and should not be cloned by everyone using the repo)
 img/outdoor_reconstruction/*
+saved_maps/*

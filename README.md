@@ -91,7 +91,41 @@ Here are the results! 🎉 The following images are a top-view over the geometri
 
 ## 🤖 Real-Time ROS 2 Integration
 
-*Coming Soon!*
+The included ROS 2 node in `src/ros2_node.py` allows for real-time semantic mapping and simultaneous open-vocabulary queries. It requires RGB, depth and camera info topics to be published. Camera poses are tracked from TF.
+
+1. Install ROS 2 (tested with Humble)
+2. Set up OTAS in a virtual environment with dependencies installed and checkpoints downloaded (see Getting Started)
+3. Install ROS 2 dependencies: `apt update && apt install -y ros-$ROS_DISTRO-sensor-msgs-py ros-$ROS_DISTRO-message-filters ros-$ROS_DISTRO-cv-bridge`. Depending on the provided message-filters and cv-bridge binaries, you may need to downgrade numpy: `pip install "numpy<2"`
+4. Adjust configuration file (e.g. `src/model_config/OTAS_ros2.json`) to your sensor setup. The following settings must match your ROS 2 environment:
+  * `ros_world_frame` - World coordinate frame name (will be the common frame for all published pointclouds). If you run a SLAM alongside to track camera poses, make sure that TF updates from this (world) frame to the camera optical frame are time-synchronized with the camera streams.
+  * `ros_camera_optical_frame` - Camera *optical* frame. Make sure that (matching ROS 2 conventions) this frame follows the OpenCV convention of z-forward, y-down, x-right. Most camera drivers publish a static transform from the camera base frame to this optical frame.
+  * `ros_rgb_topic` - RGB image stream
+  * `ros_depth_topic` - Depth image stream
+  * `ros_camera_info_topic` - Camera info topic (use the depth camera's info here as published by the depth camera driver)
+5. Run the ROS 2 node: `python ros2_node.py`
+
+**Published Topics**
+
+The ROS 2 node publishes the following topics. All are of type Pointcloud2 and in the world frame:
+
+* `/otas/pointcloud/geometric` - Geometric pointcloud
+* `/otas/pointcloud/pca` - PCA over language embeddings
+* `/otas/pointcloud/similarity` - Semantic similarity to a given prompt
+* `/otas/pointcloud/mask` - Semantic segmentation mask
+* `/otas/pointcloud/cluster` - Semantic clusters
+
+**Subscribed Topics**
+
+* `/otas/query` - Query prompt to trigger publishing of similarity and mask pointclouds
+
+**Parameters**
+
+* `/otas/save_map_path` - Path to save the map to disk. Set using `ros2 param set /otas_frame_buffer otas_save_map_path "<path>"`
+
+**Services**
+
+* `/otas/save_map` - Save the current map to disk in Nerfstudio format. Saves by default to `<otas_dir>/saved_maps/<timestamp>`. Save location can be changed by setting the `/otas/save_map_path` parameter. Call using `ros2 service call otas/save_map std_srvs/srv/Trigger`
+* `/otas/clear_map` - Clear the mapped keyframes. Call using `ros2 service call otas/clear_map std_srvs/srv/Trigger`
 
 ***************************************
 
@@ -117,7 +151,8 @@ Thanks to these repositories and works! Without them, this research wouldn't hav
 * [DINOv2](https://github.com/facebookresearch/dinov2)
 * [Maskclip_onnx](https://github.com/RogerQi/maskclip_onnx)
 * [CLIP](https://github.com/openai/CLIP)
+* [Open3D](https://github.com/isl-org/Open3D)
 * [Segment Anything 2](https://github.com/facebookresearch/segment-anything-2)
 * [VGGT](https://github.com/facebookresearch/VGGT)
 * [Nerfstudio](https://github.com/nerfstudio-project/nerfstudio)
-* [AM-RADIO](/https://github.com/NVlabs/RADIO)
+* [AM-RADIO](https://github.com/NVlabs/RADIO)
