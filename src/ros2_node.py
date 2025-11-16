@@ -10,6 +10,7 @@ from rclpy.duration import Duration
 from std_msgs.msg import Header, String
 from sensor_msgs.msg import PointCloud2, PointField, Image as ROSImage, CameraInfo
 from geometry_msgs.msg import TransformStamped
+from std_srvs.srv import Trigger
 
 # ROS conversions
 from sensor_msgs_py import point_cloud2 as pc2
@@ -32,7 +33,7 @@ from copy import deepcopy
 from typing import List, Tuple, Optional, Dict, Any
 
 # OTAS
-from inference import spatial_inference, clear_cuda_cache, equally_space
+from inference import spatial_inference, clear_cuda_cache, equally_space, current_dir
 
 ##------------------
 ## Point Cloud Conversion
@@ -90,9 +91,10 @@ def pcl2roscloud(open3d_cloud, frame_id="base_link"):
 class OTASVisualizationNode(Node):
     """Basic ROS2 node for publishing OTAS semantic pointclouds"""
     
-    def __init__(self, automatic_spin=True): # internal spinning set to True for convenience when just visualising from a notebook
+    def __init__(self, automatic_spin: bool = True, convenience_rotate: bool = False): # internal spinning set to True for convenience when just visualising from a notebook
         super().__init__('otas_visualization_node')
         self.automatic_spin = automatic_spin
+        self.convenience_rotate = convenience_rotate
         
         self.geo_publisher = self.create_publisher(PointCloud2, '/otas/pointcloud/geometric', 1)
         self.pca_publisher = self.create_publisher(PointCloud2, '/otas/pointcloud/pca', 1)
@@ -148,9 +150,9 @@ class OTASVisualizationNode(Node):
         if self.pcd_mask is not None: self.publish_pointcloud(self.pcd_mask, self.mask_publisher, frame_id)
         if self.pcd_cluster is not None: self.publish_pointcloud(self.pcd_cluster, self.cluster_publisher, frame_id)
 
-    def publish_pointcloud(self, pcd: o3d.geometry.PointCloud, publisher, frame_id: str = "base_link", convenience_rotate: bool = False) -> None:
+    def publish_pointcloud(self, pcd: o3d.geometry.PointCloud, publisher, frame_id: str = "base_link") -> None:
         try:
-            if convenience_rotate:
+            if self.convenience_rotate:
                 pcd_out = deepcopy(pcd)
                 R = pcd_out.get_rotation_matrix_from_xyz((np.pi/-2, 0, 0))  # -90 deg around x to turn in expected map orientation for ROS -> Convenient when initialising from VGGT
                 pcd_out.rotate(R, center=(0,0,0))
@@ -183,9 +185,7 @@ class OTASQuerySubscriber(Node):
     
     def get_latest_query(self) -> Optional[str]:
         """Atomically retrieves the latest query prompt."""
-        with self._query_lock: 
-            self._trigger_query = True
-            return self._latest_query
+        with self._query_lock: return self._latest_query
 
     def get_trigger_query(self) -> bool:
         """Atomically retrieves the trigger query flag."""
@@ -193,7 +193,9 @@ class OTASQuerySubscriber(Node):
 
     def set_trigger_query(self, trigger: bool = True) -> None:
         """Sets the trigger query flag."""
-        with self._query_lock: self._trigger_query = trigger
+        with self._query_lock: 
+            if not trigger: self._trigger_query = False
+            elif trigger and self._latest_query is not None: self._trigger_query = True # Handles edgecase of no query but reconstruction triggers semantic update
 
 ##------------------
 ## Synchronises input RGB and depth streams for keyframe generation
@@ -326,11 +328,13 @@ class OTASInputSynchroniser(Node):
 ##------------------
 ## Stores frame data for reconstruction, tracks changes and checks validity of new frames
 
-class OTASFrameBuffer:
+class OTASFrameBuffer(Node):
     def __init__(self, max_len: int = 0, trunc_strategy: str = "drop_oldest", distance_threshold: float = 1.0, rotation_threshold: float = 0.8,
                         trans_velocity_threshold: float = 0.4, rotation_velocity_threshold: float = 0.4):
         
-        assert trunc_strategy in ["drop_oldest", "equal_spacing"], f"Invalid truncation strategy: {trunc_strategy}. Must be 'drop_oldest' or 'equal_spacing'. Set max_len to 0 for unlimited length."
+        super().__init__('otas_frame_buffer')
+
+        assert trunc_strategy in ["drop_oldest", "equal_spacing"], f"Invalid truncation strategy: {trunc_strategy}. Must be 'drop_oldest' or 'equal_spacing'. Set spatial_batch_size to 0 for unlimited length."
         self.depths = []
         self.imgs = []
         self.cam_poses = []
@@ -345,6 +349,11 @@ class OTASFrameBuffer:
         self.trans_velocity_threshold = trans_velocity_threshold
         self.rotation_velocity_threshold = rotation_velocity_threshold
         self.buf_lock = threading.Lock()
+
+        ## Map saving and clearing (map is fully defined by keyframes)
+        self.declare_parameter('otas_save_map_path', "")
+        self.save_map_service = self.create_service(Trigger, '/otas/save_map', self.save_map_callback)
+        self.clear_map_service = self.create_service(Trigger, '/otas/clear_map', self.clear_map_callback)
 
     def add(self, frame_bundle: Dict[str, Any]) -> None:
 
@@ -390,6 +399,58 @@ class OTASFrameBuffer:
         """Getter for the changed flag indicating new keyframe availability. """
         with self.buf_lock: return self.changed
 
+    def save_map_callback(self, request, response):
+        """ROS 2 service callback to save the current map to disk."""
+        try:
+
+            import os
+            import time
+
+            if self.has_parameter('otas_save_map_path'):
+                save_path = self.get_parameter('otas_save_map_path').value
+            else: save_path = None
+            
+            if not save_path:
+                save_path = f"{current_dir}/../saved_maps/{time.strftime('%Y%m%d_%H%M%S')}"
+            
+            save_path = os.path.expanduser(save_path)
+            os.makedirs(save_path, exist_ok=True)
+            
+            # See https://stackoverflow.com/a/6384982
+            tmp_model = spatial_inference.__new__(spatial_inference) # This skips __init__, as we only need the serialisiation fn for map saving. This is not ideal, but prevents the whole mapping server to have to be a node too
+            with self.buf_lock:
+                tmp_model.imgs = self.imgs; tmp_model.depths = self.depths
+                tmp_model.cam_poses = self.cam_poses; tmp_model.fu_fv_cu_cvs = self.fu_fv_cu_cvs
+            tmp_model.export_to_ns_data(ns_data_out_path=save_path)
+            
+            response.success = True
+            response.message = f"Map saved successfully with {len(self.imgs)} frames"
+            self.get_logger().info(response.message)
+        except Exception as e:
+            response.success = False
+            response.message = f"Failed to save map: {str(e)}"
+            self.get_logger().error(response.message)
+        
+        return response
+
+    def clear_map_callback(self, request, response):
+        """ROS 2 service callback to clear the map buffer."""
+        try:
+            with self.buf_lock:
+                num_frames = len(self.imgs)
+                self.depths = []; self.imgs = []; self.cam_poses = []; self.fu_fv_cu_cvs = []; self.stamps = []
+                self.changed = False
+            
+            response.success = True
+            response.message = f"Map cleared successfully. Removed {num_frames} frames"
+            self.get_logger().info(response.message)
+        except Exception as e:
+            response.success = False
+            response.message = f"Failed to clear map: {str(e)}"
+            self.get_logger().error(response.message)
+        
+        return response
+
     @staticmethod
     def pose_delta(pose_last: np.ndarray, pose_new: np.ndarray) -> Tuple[float, float]:
         """Computes the delta in translation and rotation between two poses. Poses are in format [tx,ty,tz,qx,qy,qz,qw]. """
@@ -431,18 +492,18 @@ def main():
         depth_topic = config["ros_depth_topic"],
         camera_info_topic = config["ros_camera_info_topic"])
 
+    buffer_node = OTASFrameBuffer(max_len=config.get("spatial_batch_size", 0),
+        trunc_strategy=config.get("spatial_trunc_strategy", "equal_spacing"),
+        distance_threshold=config["ros_keyframe_distance_threshold"],
+        rotation_threshold=config["ros_keyframe_rotation_threshold"],
+        trans_velocity_threshold=config["ros_keyframe_trans_velocity_threshold"],
+        rotation_velocity_threshold=config["ros_keyframe_rotation_velocity_threshold"])
+
     executor = MultiThreadedExecutor() # Sync nodes with multi-threaded spinning
     executor.add_node(vis)
     executor.add_node(query_node)
     executor.add_node(sync_node)
-
-    ## Buffers
-    buffer = OTASFrameBuffer(max_len=config.get("spatial_batch_size", 0),
-                            trunc_strategy=config.get("spatial_trunc_strategy", "equal_spacing"),
-                            distance_threshold=config["ros_keyframe_distance_threshold"],
-                            rotation_threshold=config["ros_keyframe_rotation_threshold"],
-                            trans_velocity_threshold=config["ros_keyframe_trans_velocity_threshold"],
-                            rotation_velocity_threshold=config["ros_keyframe_rotation_velocity_threshold"])
+    executor.add_node(buffer_node)
 
     reconstruction_ready = False # Makes sure to never query before the first keyframe has been processed
     loop_idx = 0
@@ -459,10 +520,10 @@ def main():
         ## MAPPING
         if sync_node.is_keyframe_available():
             frame = sync_node.get_latest_frame()
-            if frame != None: buffer.add(frame) # This should always be True but just to be safe
+            if frame != None: buffer_node.add(frame) # This should always be True but just to be safe
 
-        if loop_idx%40 == 0 and buffer.get_changed():
-            depths, imgs, cam_poses, fu_fv_cu_cvs = buffer.get_buffers()
+        if loop_idx%40 == 0 and buffer_node.get_changed():
+            depths, imgs, cam_poses, fu_fv_cu_cvs = buffer_node.get_buffers()
             model.reconstruct(imgs, depths, cam_poses, fu_fv_cu_cvs=fu_fv_cu_cvs)
             if config["map_server_pub_geometry"]: vis.pub_geometric(model, do_cleanup=False, frame_id=config["ros_world_frame"]) ## This registers the pcd's in the visualiser for free republishing
             if config["map_server_pub_pca"]: vis.pub_pca(model, do_cleanup=False, frame_id=config["ros_world_frame"])

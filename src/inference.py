@@ -146,9 +146,9 @@ def vggt_inference(img_paths: List[str], remove_sky: bool = True):
         print(f"[OTAS]: Masking sky for depth estimation")
         enable_autocast = False if device == "cpu" else True
         otas_instance = single_inference(enable_amp_autocast=enable_autocast)
-        sky_masks = otas_instance.segmentation_batch(ret_images, ["sky", "clouds"], neg_prompts=["ground", "object"], threshold_value=0.24)
+        sky_masks = otas_instance.segmentation_batch(ret_images, ["sky", "clouds"], neg_prompts=["ground", "object"], threshold_value=0.5) # 0.24 to be very conservative
 
-        for depth, sky_mask in zip(depths, sky_masks): # mask sky as invalid #TODO: Maybe inflate mask just to be safe
+        for depth, sky_mask in zip(depths, sky_masks): # mask sky as invalid
             depth[sky_mask >= 0.5] = np.inf
 
     ## Scale depths to metric depth
