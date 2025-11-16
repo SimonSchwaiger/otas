@@ -1,4 +1,5 @@
 {
+    "dinov2_input_size": 224,
     "dino_scale_factor": 1,
     "shared_feat_resolution": 16,
     "n_clusters": 24,

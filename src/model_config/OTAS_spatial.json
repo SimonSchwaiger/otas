@@ -1,6 +1,7 @@
 {
     "enable_mask_refinement": false,
     "voxel_size": 0.5,
+    "dinov2_input_size": 224,
     "dino_scale_factor": 4,
     "shared_feat_resolution": 64,
     "n_clusters": 24,
