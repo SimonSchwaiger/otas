@@ -25,6 +25,14 @@ Simon Schwaiger<sup>1,2</sup>, Stefan Thalhammer<sup>2</sup>, Wilfried Wöber<su
 
 ***************************************
 
+## 📰 News
+
+* [31.01.2026] OTAS has been accepted at ICRA 2026 in Vienna 🎉 Hope to see you there!
+* [16.11.2025] ROS 2 node released with updated examples.
+* [20.09.2025] Public code release.
+
+***************************************
+
 ## 🚀 Getting Started
 
 OTAS is an open-vocabulary segmentation and semantic reconstruction model that aligns foundation model output tokens across one or multiple input views without any training. This results in a parameter-efficient and lightweight language embedding approach, especially effective for outdoor tasks. Ready to dive in?
