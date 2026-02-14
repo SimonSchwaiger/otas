@@ -1,4 +1,3 @@
-#from vision_utils_radio_unified import * # For the future
 from vision_utils import *
 
 ## For eval against gpu versions
@@ -124,10 +123,10 @@ class language_map(nn.Module):
             "gmm": GaussianMixture(n_components=n_clusters, covariance_type='full'),
             "hdbscan": HDBSCAN(min_cluster_size=18, min_samples=7, cluster_selection_epsilon=0.2) }
 
-        self._dim_reduction_trained = False # TODO: For generalised pretraining
-        self._cluster_model_trained = False
         self._dim_reduction_factory = lambda: dim_reduction_switch[config["dim_reduction_type"]]
         self._cluster_model_factory = lambda: cluster_model_switch[config["cluster_model_type"]]
+        self._trained_dim_reduction_model = None # Placeholder for few-shot pretraining
+        self._trained_cluster_model = None
 
         # Keep internal shape consistent
         dino_scale_factor = self.config["dino_scale_factor"]; grid_size = 16
@@ -141,26 +140,35 @@ class language_map(nn.Module):
         if isinstance(X, torch.Tensor): X = X.detach().cpu().numpy()
         return X
 
-    def _dim_reduction(self, feature_list: Union[torch.Tensor, np.ndarray]) -> torch.Tensor:
-        if not self._dim_reduction_trained:
-            dim_reduction = self._dim_reduction_factory()
-            if not "gpu" in self.config["dim_reduction_type"]: feature_list = self._ensure_numpy(feature_list)
-            reduced_features = dim_reduction.fit_transform(feature_list)
-            reduced_features = F.normalize(self._ensure_tensor(reduced_features), dim=-1)
-        else: assert False, "Dim reduction pretraining not implemented yet"
+    def _dim_reduction(self, feature_list: Union[torch.Tensor, np.ndarray], store_output: bool = False) -> torch.Tensor:
+        if not "gpu" in self.config["dim_reduction_type"]: feature_list = self._ensure_numpy(feature_list)
 
+        if self._trained_dim_reduction_model is None: 
+            dim_reduction = self._dim_reduction_factory()
+            reduced_features = dim_reduction.fit_transform(feature_list)
+        else: 
+            if store_output: assert False, "Tried to store over already trained dim reduction model. Few-shot pretraining can only be done once."
+            reduced_features = self._trained_dim_reduction_model.transform(feature_list)
+
+        reduced_features = F.normalize(self._ensure_tensor(reduced_features), dim=-1)
+        if store_output: self._trained_dim_reduction_model = dim_reduction
         return reduced_features
     
-    def _cluster_model(self, reduced_features: Union[torch.Tensor, np.ndarray]) -> torch.Tensor:
-        if not self._cluster_model_trained:
+    def _cluster_model(self, reduced_features: Union[torch.Tensor, np.ndarray], store_output: bool = False) -> torch.Tensor:
+        if not "gpu" in self.config["cluster_model_type"]: reduced_features = self._ensure_numpy(reduced_features)
+        
+        if self._trained_cluster_model is None:
             cluster_model = self._cluster_model_factory()
-            if not "gpu" in self.config["cluster_model_type"]: reduced_features = self._ensure_numpy(reduced_features)
             cluster_labels = cluster_model.fit_predict(reduced_features)  # Shape: (num_patches,), can be torch tensor on gpu or numpy array
-            cluster_labels = self._ensure_tensor(cluster_labels)
-            unique_labels = torch.unique(cluster_labels, sorted=True)
-            if -1 in unique_labels: cluster_labels[cluster_labels == -1] = len(unique_labels)  # Assign a new cluster label for noise
-        else: assert False, "Cluster model pretraining not implemented yet"
-
+        else:
+            if store_output: assert False, "Tried to store over already trained cluster model. Few-shot pretraining can only be done once."
+            cluster_labels = self._trained_cluster_model.predict(reduced_features)
+            
+        cluster_labels = self._ensure_tensor(cluster_labels)
+        unique_labels = torch.unique(cluster_labels, sorted=True)
+        if -1 in unique_labels: cluster_labels[cluster_labels == -1] = len(unique_labels)  # Assign a new cluster label for noise
+        
+        if store_output: self._trained_cluster_model = cluster_model
         return cluster_labels
 
     def _segmentation_map(self, cluster_labels: torch.Tensor, dtype: torch.dtype = torch.float32) -> torch.Tensor:
@@ -255,6 +263,18 @@ class language_map(nn.Module):
         avg_feats = avg_feats / avg_feats.norm(dim=1, keepdim=True)
         output = avg_feats[flat_labels]  # (N, C)
         return output.view(H, W, C)
+    
+    def few_shot_pretrain(self, imgs: List[Image.Image]) -> None:
+        from tqdm import tqdm
+
+        dino_upscaled_flats = []
+        for img in tqdm(imgs, desc="[OTAS]: Few-shot pretrain; embedding images"):
+            dino_upscaled_flat = self.dino_upscaled_feat(img)
+            dino_upscaled_flats.append(dino_upscaled_flat)
+        
+        dino_upscaled_flats = torch.cat(dino_upscaled_flats, dim=0)
+        dino_reduceds = self._dim_reduction(dino_upscaled_flats, store_output=True)
+        _ = self._cluster_model(dino_reduceds, store_output=True)
     
     @torch.no_grad()
     def embed_image(self, img: Image.Image, ret_dict: bool = False) -> Union[torch.Tensor, dict]:
