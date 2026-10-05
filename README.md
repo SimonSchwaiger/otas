@@ -142,11 +142,15 @@ The ROS 2 node publishes the following topics. All are of type Pointcloud2 and i
 If you use this work in your research, please cite our paper:
 
 ```bibtex
-@misc{Schwaiger2025OTAS,
-    title               = {OTAS: Open-vocabulary Token Alignment for Outdoor Segmentation. \textit{arXiv preprint arXiv:2507.08851}}, 
-    author              = {Simon Schwaiger and Stefan Thalhammer and Wilfried Wöber and Gerald Steinbauer-Wagner},
-    year                = {2025},
-    url                 = {https://arxiv.org/abs/2507.08851}
+@inproceedings{schwaiger2026otas,
+  author    = {Schwaiger, Simon and Thalhammer, Stefan and W{\"o}ber, Wilfried
+               and Steinbauer-Wagner, Gerald},
+  title     = {{OTAS}: Open-vocabulary Token Alignment for Outdoor Segmentation},
+  booktitle = {2026 IEEE International Conference on Robotics and Automation (ICRA)},
+  year      = {2026},
+  pages     = {8707--8714},
+  doi       = {10.1109/ICRA57385.2026.11696067},
+  url       = {https://doi.org/10.1109/ICRA57385.2026.11696067}
 }
 ```
 
