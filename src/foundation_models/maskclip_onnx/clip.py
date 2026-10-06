@@ -4,6 +4,7 @@ import urllib
 import warnings
 from typing import Any, Union, List
 import packaging
+import packaging.version
 
 import torch
 from PIL import Image
